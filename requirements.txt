@@ -1,4 +1,4 @@
-aiohttp
-pycryptodome
-protobuf==3.20.3
 flask
+aiohttp
+protobuf
+pycryptodome
