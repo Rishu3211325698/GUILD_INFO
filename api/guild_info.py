@@ -511,3 +511,10 @@ def handler(request, context):
     response = loop.run_until_complete(async_handler(request))
     loop.close()
     return response
+ def handler(request, context):
+    return {
+        'statusCode': 200,
+        'headers': {'Content-Type': 'application/json'},
+        'body': '{"message": "Hello from Vercel!"}'
+     }   
+    
