@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Guild Info API – Flask + Vercel compatible.
-Pretty text output with `?format=text`.
+Original API URLs kept. Added 403 retry logic.
 """
 
 import json
@@ -11,7 +11,7 @@ import aiohttp
 import os
 from datetime import datetime
 from Crypto.Cipher import AES
-from Crypto.Util.Padding import pad, unpad
+from Crypto.Util.Padding import pad
 import my_pb2
 import output_pb2
 
@@ -53,7 +53,14 @@ def build_clan_request(clan_id):
     plain = tag_varint + value_varint
     return encrypt_data(plain)
 
-# ---------- Protobuf parser (from claninfo.py) ----------
+# ---------- Protobuf parser ----------
+from datetime import datetime
+import json
+import re
+
+
+# ------------------ CORE PROTO PARSER ------------------ #
+
 def read_varint(data, i):
     shift = 0
     result = 0
@@ -66,26 +73,34 @@ def read_varint(data, i):
         shift += 7
     return result, i
 
+
 def parse_proto(data, i=0, end=None):
     if end is None:
         end = len(data)
+
     res = {}
+
     while i < end:
         key, i = read_varint(data, i)
         field = key >> 3
         wire = key & 7
+
         if wire == 0:
             val, i = read_varint(data, i)
+
         elif wire == 2:
             size, i = read_varint(data, i)
-            raw = data[i:i+size]
+            raw = data[i:i + size]
+
             try:
                 val = raw.decode("utf-8")
             except:
                 val = parse_proto(raw, 0, len(raw))
+
             i += size
         else:
             break
+
         if field in res:
             if isinstance(res[field], list):
                 res[field].append(val)
@@ -93,7 +108,11 @@ def parse_proto(data, i=0, end=None):
                 res[field] = [res[field], val]
         else:
             res[field] = val
+
     return res
+
+
+# ------------------ UTILITIES ------------------ #
 
 def format_timestamp(ts):
     try:
@@ -101,35 +120,89 @@ def format_timestamp(ts):
     except:
         return None
 
-def clean_text(text):
-    if isinstance(text, bytes):
-        text = text.decode('utf-8', errors='replace')
+
+def safe_get(data, key, default=None):
+    val = data.get(key, default)
+    if isinstance(val, list):
+        return val[0] if len(val) == 1 else val
+    return val
+
+
+# ------------------ HEX + NAME DECODER ------------------ #
+
+def decode_hex(value):
+    """Decode hex → string / json / list"""
+    if not isinstance(value, str):
+        return value
+
+    try:
+        raw = bytes.fromhex(value)
+
+        # Try JSON
+        try:
+            return json.loads(raw.decode())
+        except:
+            pass
+
+        # Try UTF-8 string
+        return raw.decode("utf-8", errors="ignore")
+
+    except:
+        return value
+
+
+def clean_name(text):
+    """Remove FF symbols and keep clean names like RISHU ROLEX"""
     if not isinstance(text, str):
-        return str(text)
-    return ''.join(c for c in text if c.isprintable()).strip()
+        return text
+
+    # remove decorative unicode / symbols
+    text = re.sub(r'[^\w\s]', '', text)
+
+    return text.strip()
+
+
+def smart_decode(value):
+    """Auto decode everything"""
+    value = decode_hex(value)
+
+    if isinstance(value, str):
+        return clean_name(value)
+
+    return value
+
+
+# ------------------ MAIN MAPPER ------------------ #
 
 def map_guild(data):
-    created_ts = data.get(24)
-    active_ts = data.get(44)
+
+    created_ts = safe_get(data, 24)
+    active_ts = safe_get(data, 44)
+
+    # decode important fields
+    name = smart_decode(safe_get(data, 2, ""))
+    tag = smart_decode(safe_get(data, 12, ""))
+    desc = smart_decode(safe_get(data, 13, ""))
+    badge = smart_decode(safe_get(data, 14, {}))
+    id_list = smart_decode(safe_get(data, 15, []))
+
     return {
         "guild_info": {
-            "guild_id": data.get(1),
-            "guild_name": clean_text(data.get(3)),
-            "guild_tag": data.get(5),
-            "guild_label": clean_text(data.get(50)),
-            "description": clean_text(data.get(13)),
-            "level": data.get(6),
-            "rank_points": data.get(7),
-            "guild_score": str(data.get(15)),      # may be a list
-            "badge_id": str(data.get(14)),         # may be a dict
-            "leader_uid": data.get(11),
-            "co_leader_uid": clean_text(data.get(12)),
-            "region_id": data.get(48),
-            "region_flag": clean_text(data.get(2)),
-            "members": {
-                "current": data.get(21),
-                "maximum": data.get(20)
-            },
+            "guild_id": safe_get(data, 1),
+
+            # 🔥 CLEAN NAMES HERE
+            "guild_name": name,
+            "guild_tag": tag,
+            "description": desc,
+
+            "level": safe_get(data, 5, 0),
+            "rank": safe_get(data, 6, 0),
+            "members": safe_get(data, 7, 0),
+
+            "leader_uid": safe_get(data, 4),
+
+            "region_flag": smart_decode(safe_get(data, 2, "")),
+
             "created": {
                 "timestamp": created_ts,
                 "date": format_timestamp(created_ts)
@@ -139,19 +212,35 @@ def map_guild(data):
                 "date": format_timestamp(active_ts)
             }
         },
-        "statistics": {
-            "total_score": data.get(54),
-            "wins": data.get(55),
-            "ranking_points": data.get(58)
-        },
-        "members_preview": []   # you can add member parsing if needed
+
+        "extra_data": {
+            "metadata": badge,        # decoded JSON
+            "id_list": id_list,      # decoded list
+            "score": safe_get(data, 20),
+            "likes": safe_get(data, 23),
+            "power": safe_get(data, 36),
+            "ranking": safe_get(data, 37),
+            "tier": safe_get(data, 38)
+        }
     }
 
-# ---------- Guest login to get JWT ----------
-async def get_jwt_from_guest(session, uid, password):
-    import my_pb2
-    import output_pb2
 
+# ------------------ FINAL OUTPUT ------------------ #
+
+def pretty(data):
+    return json.dumps(data, indent=4, ensure_ascii=False)
+
+
+# ------------------ USAGE ------------------ #
+
+# raw_bytes = your decrypted protobuf bytes
+# decoded = parse_proto(raw_bytes)
+# final = map_guild(decoded)
+# print(pretty(final))
+
+# ---------- Guest login to get JWT (original URLs) ----------
+async def get_jwt_from_guest(session, uid, password):
+    # Original OAuth endpoint
     oauth_url = "https://100067.connect.garena.com/oauth/guest/token/grant"
     oauth_payload = {
         'uid': uid,
@@ -181,6 +270,7 @@ async def get_jwt_from_guest(session, uid, password):
     if not access_token or not open_id:
         return None
 
+    # Original MajorLogin endpoint
     login_url = "https://loginbp.ggblueshark.com/MajorLogin"
     login_headers = {
         "User-Agent": "Dalvik/2.1.0 (Linux; U; Android 9; ASUS_Z01QD Build/PI)",
@@ -190,6 +280,7 @@ async def get_jwt_from_guest(session, uid, password):
         "X-GA": "v1 1",
         "ReleaseVersion": "OB53"
     }
+
     platforms = [8, 3, 4, 6]
     for platform in platforms:
         try:
@@ -222,27 +313,30 @@ async def get_jwt_from_guest(session, uid, password):
             async with session.post(login_url, data=encrypted_body, headers=login_headers, ssl=False, timeout=6) as r:
                 if r.status == 200:
                     resp_data = await r.read()
+                    # Try protobuf first
                     try:
                         response_proto = output_pb2.Garena_420()
                         response_proto.ParseFromString(resp_data)
                         if response_proto.token:
                             return response_proto.token
                     except:
-                        text = resp_data.decode('utf-8', errors='ignore')
-                        start = text.find("eyJ")
-                        if start != -1:
-                            end = start
-                            while end < len(text) and text[end] not in ['"', ' ', '\n', '\r', '\t', '\x00']:
-                                end += 1
-                            jwt = text[start:end]
-                            if jwt.count('.') >= 2:
-                                return jwt
+                        pass
+                    # Fallback: search for JWT in raw text
+                    text = resp_data.decode('utf-8', errors='ignore')
+                    start = text.find("eyJ")
+                    if start != -1:
+                        end = start
+                        while end < len(text) and text[end] not in ['"', ' ', '\n', '\r', '\t', '\x00']:
+                            end += 1
+                        jwt = text[start:end]
+                        if jwt.count('.') >= 2:
+                            return jwt
         except:
             pass
         await asyncio.sleep(0.1)
     return None
 
-# ---------- Fetch clan info ----------
+# ---------- Fetch clan info (original URL) ----------
 async def fetch_clan_info(session, jwt, clan_id):
     url = "https://client.ind.freefiremobile.com/GetClanInfoByClanID"
     headers = {
@@ -258,12 +352,11 @@ async def fetch_clan_info(session, jwt, clan_id):
             error_text = await resp.text()
             return None, resp.status, error_text
         raw = await resp.read()
-        # Response is plain protobuf
         parsed = parse_proto(raw)
         return map_guild(parsed), resp.status, None
 
-# ---------- Core handler ----------
-async def handle_clan_request(clan_id):
+# ---------- Core handler with 403 retry ----------
+async def handle_clan_request(clan_id, retry_auth=True):
     if not clan_id:
         return 400, {'error': 'Missing clan_id'}
     try:
@@ -286,12 +379,29 @@ async def handle_clan_request(clan_id):
             return 500, {'error': 'Failed to obtain JWT'}
 
         guild_info, status, error_text = await fetch_clan_info(session, jwt, clan_id)
+
+        # If 403 and we haven't retried yet, refresh JWT and try once more
+        if status == 403 and retry_auth:
+            new_jwt = await get_jwt_from_guest(session, uid, password)
+            if new_jwt:
+                guild_info, status, error_text = await fetch_clan_info(session, new_jwt, clan_id)
+            else:
+                # Try a different account if available
+                for acc in ACCOUNTS:
+                    if acc != account:
+                        new_uid = str(acc.get('uid'))
+                        new_pwd = acc.get('password')
+                        new_jwt = await get_jwt_from_guest(session, new_uid, new_pwd)
+                        if new_jwt:
+                            guild_info, status, error_text = await fetch_clan_info(session, new_jwt, clan_id)
+                            break
+
         if status != 200:
-            return status, {'error': f'Clan info request failed: {error_text}'}
+            return status, {'error': f'Clan info request failed (HTTP {status}): {error_text}'}
 
         return 200, guild_info
 
-# ---------- Pretty chart formatter (based on actual guild_info) ----------
+# ---------- Pretty text formatter ----------
 def format_guild_chart(guild_info):
     g = guild_info["guild_info"]
     s = guild_info["statistics"]
@@ -300,44 +410,34 @@ def format_guild_chart(guild_info):
     lines.append("╔════════════════════════════════════════════════════════════════╗")
     lines.append("║                    GUILD INFORMATION                           ║")
     lines.append("╠════════════════════════════════════════════════════════════════╣")
-
     lines.append(f"║ Name        : {g['guild_name'][:50]:<50} ║")
     lines.append(f"║ Guild ID    : {g['guild_id']:<50} ║")
     lines.append(f"║ Region      : {g['region_flag'][:50]:<50} ║")
     lines.append(f"║ Leader UID  : {g['leader_uid'] if g['leader_uid'] else 'None':<50} ║")
     lines.append(f"║ Co-Leader   : {g['co_leader_uid'][:50] if g['co_leader_uid'] else 'None':<50} ║")
-
     lines.append("╠════════════════════════════════════════════════════════════════╣")
     lines.append("║ LEVEL & MEMBERS                                                 ║")
     lines.append("╠════════════════════════════════════════════════════════════════╣")
-
     lines.append(f"║ Level       : {g['level']:<50} ║")
     lines.append(f"║ Rank Points : {g['rank_points']:<50} ║")
     lines.append(f"║ Members     : {g['members']['current'] if g['members']['current'] else 0} / {g['members']['maximum']:<41} ║")
-
     lines.append("╠════════════════════════════════════════════════════════════════╣")
     lines.append("║ STATS                                                          ║")
     lines.append("╠════════════════════════════════════════════════════════════════╣")
-
     lines.append(f"║ Guild Score : {g['guild_score'][:46]:<46} ║")
     lines.append(f"║ Total Score : {s['total_score'] if s['total_score'] else 0:<46} ║")
     lines.append(f"║ Wins        : {s['wins'] if s['wins'] else 0:<46} ║")
     lines.append(f"║ Ranking Pts : {s['ranking_points'] if s['ranking_points'] else 0:<46} ║")
-
     lines.append("╠════════════════════════════════════════════════════════════════╣")
     lines.append("║ DESCRIPTION & BADGE                                            ║")
     lines.append("╠════════════════════════════════════════════════════════════════╣")
-
     lines.append(f"║ Badge ID    : {g['badge_id'][:50]:<50} ║")
     lines.append(f"║ Description : {g['description'][:48]:<48} ║")
-
     lines.append("╠════════════════════════════════════════════════════════════════╣")
     lines.append("║ TIMESTAMPS                                                     ║")
     lines.append("╠════════════════════════════════════════════════════════════════╣")
-
     lines.append(f"║ Created     : {g['created']['date'] if g['created']['date'] else 'Unknown':<50} ║")
     lines.append(f"║ Last Active : {g['last_active']['date'] if g['last_active']['date'] else 'Unknown':<50} ║")
-
     lines.append("╚════════════════════════════════════════════════════════════════╝")
     return "\n".join(lines)
 
@@ -383,8 +483,11 @@ def start_flask():
 # ---------- Vercel handler ----------
 async def handler(request):
     if request.method == 'POST':
-        body = await request.json()
-        clan_id = body.get('clan_id')
+        try:
+            body = await request.json()
+            clan_id = body.get('clan_id')
+        except:
+            clan_id = None
     else:
         clan_id = request.query_params.get('clan_id')
 
@@ -395,6 +498,5 @@ async def handler(request):
         'body': json.dumps(result, indent=2, default=str)
     }
 
-def main(request):
-    return asyncio.run(handler(request))
-,
+if __name__ == '__main__':
+    start_flask()
