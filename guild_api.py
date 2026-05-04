@@ -397,7 +397,4 @@ async def handler(request):
 
 def main(request):
     return asyncio.run(handler(request))
-
-# ---------- Entry point ----------
-if __name__ == "__main__":
-    start_flask()
+,
