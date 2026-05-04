@@ -497,6 +497,3 @@ async def handler(request):
         'headers': {'Content-Type': 'application/json'},
         'body': json.dumps(result, indent=2, default=str)
     }
-
-if __name__ == '__main__':
-    start_flask()
