@@ -1,13 +1,14 @@
 {
-  "functions": {
-    "api/guild.py": {
-      "runtime": "python3.12"
+  "builds": [
+    {
+      "src": "guild.py",
+      "use": "@vercel/python"
     }
-  },
+  ],
   "routes": [
     {
       "src": "/(.*)",
-      "dest": "api/guild.py"
+      "dest": "guild.py"
     }
   ]
 }
