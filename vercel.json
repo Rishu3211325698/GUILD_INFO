@@ -1,0 +1,13 @@
+{
+  "functions": {
+    "guild_info.py": {
+      "runtime": "python3.9"
+    }
+  },
+  "routes": [
+    {
+      "src": "/(.*)",
+      "dest": "/guild_info"
+    }
+  ]
+}
