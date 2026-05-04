@@ -1,7 +1,13 @@
 {
   "functions": {
     "api/guild.py": {
-      "runtime": "@vercel/python@3.1.0"
+      "runtime": "python3.9"
     }
-  }
+  },
+  "routes": [
+    {
+      "src": "/(.*)",
+      "dest": "/api/guild"
+    }
+  ]
 }
