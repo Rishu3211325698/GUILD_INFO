@@ -1,13 +1,13 @@
 {
   "functions": {
     "api/guild.py": {
-      "runtime": "python3.9"
+      "runtime": "python3.12"
     }
   },
   "routes": [
     {
       "src": "/(.*)",
-      "dest": "/api/guild"
+      "dest": "api/guild.py"
     }
   ]
 }
