@@ -1,4 +1,9 @@
 {
+  "functions": {
+    "guild_api.py": {
+      "runtime": "python3.9"
+    }
+  },
   "routes": [
     {
       "src": "/(.*)",
