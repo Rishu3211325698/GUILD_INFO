@@ -1,8 +1,0 @@
-{
-  "routes": [
-    {
-      "src": "/guild_info",
-      "dest": "/api/guild_info"
-    }
-  ]
-}
